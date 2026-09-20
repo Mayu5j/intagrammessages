@@ -1,0 +1,41 @@
+env example
+# Copy this file to .env and fill in your values, then load it before
+# running the script, e.g.: export $(grep -v '^#' .env | xargs)
+# Скопируй этот файл в .env, заполни значения и подгрузи перед запуском.
+
+# --- Login method / Способ входа ---
+# "password" (default/по умолчанию) or "session"
+IG_LOGIN_METHOD=password
+
+# --- Instagram account / Аккаунт Instagram ---
+IG_USERNAME=your_instagram_login
+IG_PASSWORD=your_instagram_password
+
+# Only needed if you have 2FA via authenticator app (TOTP secret key,
+# NOT the 6-digit code) / Нужно только если включена 2FA через
+# приложение-аутентификатор (secret-ключ, а не 6-значный код)
+IG_TOTP_SECRET=
+
+# Optional proxy / Опциональный прокси
+# http://user:pass@host:port or socks5://user:pass@host:port
+IG_PROXY=
+
+# --- Who to monitor / За кем следим ---
+# Comma-separated usernames, no @ / Ники через запятую, без @
+IG_TARGET_USERNAMES=nickname_one,nickname_two
+
+# --- Telegram bot ---
+TG_BOT_TOKEN=123456:your-telegram-bot-token
+# Your personal Telegram numeric ID (find it via @userinfobot)
+# Твой личный числовой Telegram ID (узнать через @userinfobot)
+TG_ADMIN_ID=0
+
+requirements -->>
+
+instagrapi>=2.18
+
+ 
+requests>=2.31
+
+ 
+pyotp>=2.9
