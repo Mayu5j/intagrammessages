@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3#!/usr/bin/env python3
 """
 Instagram Direct -> Telegram монитор.
 
@@ -26,10 +26,19 @@ Instagram Direct -> Telegram монитор.
     подтвердить вход через официальное приложение/сайт и перезапустить.
 
 Установка зависимостей:
-    pip install instagrapi requests
+    pip install instagrapi requests pyotp
 
 Перед первым запуском заполни блок CONFIG ниже (или вынеси в переменные
-окружения / .env — см. комментарии).
+окружения / .env — см. комментарии и README.md / README.ru.md).
+
+Точки расширения (если хочешь что-то переделать под себя):
+  - Способ входа            -> функция ig_login() + переменная IG_LOGIN_METHOD
+  - Кого отслеживаем         -> переменная TARGET_USERNAMES
+  - Формат сообщения в Telegram -> f-строка внутри main(), переменная text
+  - Подписи типов контента   -> словарь CONTENT_TYPE_LABELS
+  - Логика "прочитано ли"    -> функция is_already_seen_by_me()
+  - Частота опроса           -> POLL_INTERVAL_BASE / POLL_INTERVAL_JITTER
+  - Куда шлём уведомления    -> функция send_telegram_message()
 """
 
 import json
@@ -51,6 +60,16 @@ except ImportError:
 
 # ============================== CONFIG ==============================
 
+# --- Способ входа в Instagram ------------------------------------------
+# "password" — обычный вход по логину/паролю (+ опционально TOTP-2FA).
+#              Сессия сохранится в SESSION_FILE и переиспользуется дальше.
+# "session"  — вообще не логиниться заново, а взять уже готовую сессию
+#              из SESSION_FILE (например, экспортированную из другого
+#              инструмента/скрипта). Если файла нет — скрипт остановится
+#              с понятной ошибкой. Полезно, если пароль/2FA вводить неохота
+#              или используешь сессию, полученную другим способом.
+IG_LOGIN_METHOD = os.environ.get("IG_LOGIN_METHOD", "password")  # "password" | "session"
+
 IG_USERNAME = os.environ.get("IG_USERNAME", "your_instagram_login")
 IG_PASSWORD = os.environ.get("IG_PASSWORD", "your_instagram_password")
 
@@ -60,7 +79,14 @@ IG_PASSWORD = os.environ.get("IG_PASSWORD", "your_instagram_password")
 # в виде текста под QR-кодом ("не можете отсканировать QR? введите код").
 # Если ты её не сохранял(а), придётся отключить 2FA через authenticator
 # и подключить заново, чтобы увидеть этот secret ещё раз.
+# Актуально только для IG_LOGIN_METHOD="password".
 IG_TOTP_SECRET = os.environ.get("IG_TOTP_SECRET", "")
+
+# Опциональный прокси для запросов к Instagram, формат:
+# http://user:pass@host:port  или  socks5://user:pass@host:port
+# Полезно, если сервер работает с datacenter-IP, который Instagram
+# блокирует активнее, чем обычный "домашний"/мобильный IP.
+IG_PROXY = os.environ.get("IG_PROXY", "")
 
 # Ники (username, без @) людей, чьи сообщения нужно отслеживать.
 # Через переменную окружения передавай через запятую: "nick1,nick2,nick3"
@@ -186,9 +212,39 @@ def _do_login(cl: Client) -> None:
         cl.login(IG_USERNAME, IG_PASSWORD, verification_code=code)
 
 
-def ig_login() -> Client:
-    cl = Client()
+def _apply_proxy(cl: Client) -> None:
+    if IG_PROXY:
+        cl.set_proxy(IG_PROXY)
+        log.info("Использую прокси для запросов к Instagram")
 
+
+def ig_login() -> Client:
+    """
+    Точка расширения под разные способы входа. Чтобы добавить свой
+    способ — заведи новую ветку IG_LOGIN_METHOD == "..." и внутри неё
+    верни залогиненный Client(). Остальной код скрипта (цикл опроса,
+    Telegram и т.д.) от способа входа не зависит.
+    """
+    cl = Client()
+    _apply_proxy(cl)
+
+    if IG_LOGIN_METHOD == "session":
+        # Только готовая сессия, без пароля. Если её нет — явная ошибка,
+        # а не попытка залогиниться другим способом молча.
+        if not SESSION_FILE.exists():
+            raise RuntimeError(
+                f"IG_LOGIN_METHOD=session, но файла {SESSION_FILE} нет. "
+                "Либо положи туда готовую сессию (settings.json от instagrapi), "
+                "либо переключись на IG_LOGIN_METHOD=password."
+            )
+        cl.load_settings(SESSION_FILE)
+        cl.get_timeline_feed()  # проверяем, что сессия реально рабочая
+        return cl
+
+    if IG_LOGIN_METHOD != "password":
+        raise RuntimeError(f"Неизвестный IG_LOGIN_METHOD: {IG_LOGIN_METHOD!r} (ожидается 'password' или 'session')")
+
+    # --- способ "password" (обычный вход по логину/паролю) ---
     # Важно: если device fingerprint (settings) генерируется заново при
     # каждой попытке логина, для Instagram это выглядит как вход с кучи
     # разных "устройств" подряд — это резко повышает шанс блокировки/429.
@@ -198,6 +254,7 @@ def ig_login() -> Client:
     if SESSION_FILE.exists():
         log.info("Загружаю сохранённые settings/сессию Instagram")
         cl.load_settings(SESSION_FILE)
+        _apply_proxy(cl)  # load_settings может сбросить прокси — применяем ещё раз
     else:
         log.info("Первый запуск: генерирую и сохраняю device fingerprint")
         cl.dump_settings(SESSION_FILE)
@@ -208,6 +265,7 @@ def ig_login() -> Client:
     except LoginRequired:
         log.info("Сессия протухла, логинюсь заново (fingerprint тот же)")
         cl.load_settings(SESSION_FILE)
+        _apply_proxy(cl)
         cl.settings["authorization_data"] = None
         _do_login(cl)
     except ChallengeRequired:
